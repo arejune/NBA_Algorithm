@@ -1,0 +1,179 @@
+import requests
+import json
+
+API_KEY = "afe51d931dc36e2127002cc7dd7ff528"
+SPORT = "basketball_nba"
+REGION = "us"
+MARKETS = "player_points,player_assists,player_rebounds,player_points_rebounds_assists"
+ODDS_FORMAT = "american"
+API_BASE = "https://api.the-odds-api.com/v4"
+
+def american_odds_to_probability(odds):
+    """Convert American odds to implied probability percentage"""
+    if odds is None:
+        return None
+   
+    if odds > 0:
+        # Positive odds: Underdog
+        return round(100 / (odds + 100) * 100, 1)
+    else:
+        # Negative odds: Favorite
+        return round(abs(odds) / (abs(odds) + 100) * 100, 1)
+
+def get_team_game(team_name):
+    url = f"{API_BASE}/sports/{SPORT}/events?apiKey={API_KEY}&regions={REGION}"
+    response = requests.get(url)
+   
+    # Extract and display the remaining requests info from headers
+    if 'x-requests-remaining' in response.headers:
+        remaining = response.headers['x-requests-remaining']
+        print(f"API Requests Remaining: {remaining}")
+    if 'x-requests-used' in response.headers:
+        used = response.headers['x-requests-used']
+        print(f"API Requests Used: {used}")
+   
+    # Debug the response
+    print(f"Response status code: {response.status_code}")
+   
+    try:
+        events = response.json()
+        # Debug the response structure
+        if not isinstance(events, list):
+            print(f"Warning: API returned {type(events)} instead of list")
+            print(f"Response content: {events[:200]}..." if isinstance(events, str) else events)
+            return None
+           
+        print(f"Found {len(events)} events")
+       
+        for event in events:
+            # Ensure event is a dictionary before accessing keys
+            if not isinstance(event, dict):
+                print(f"Warning: Event is not a dictionary: {event}")
+                continue
+               
+            home_team = event.get('home_team', '')
+            away_team = event.get('away_team', '')
+           
+            if (home_team and team_name.lower() in home_team.lower()) or \
+               (away_team and team_name.lower() in away_team.lower()):
+                return event  # Return the first future game found
+        return None
+       
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON: {e}")
+        print(f"Response content: {response.text[:200]}...")
+        return None
+
+def get_player_props(event_id, team_name):
+    url = f"{API_BASE}/sports/{SPORT}/events/{event_id}/odds"
+    params = {
+        "apiKey": API_KEY,
+        "regions": REGION,
+        "markets": MARKETS,
+        "oddsFormat": ODDS_FORMAT
+    }
+   
+    response = requests.get(url, params=params)
+   
+    # Extract and display the remaining requests info from headers
+    if 'x-requests-remaining' in response.headers:
+        remaining = response.headers['x-requests-remaining']
+        print(f"API Requests Remaining: {remaining}")
+    if 'x-requests-used' in response.headers:
+        used = response.headers['x-requests-used']
+        print(f"API Requests Used: {used}")
+   
+    try:
+        data = response.json()
+    except json.JSONDecodeError as e:
+        print(f"Error decoding JSON: {e}")
+        print(f"Response content: {response.text[:200]}...")
+        return {}
+   
+    props = {}
+   
+    # Look inside bookmakers
+    for bookmaker in data.get("bookmakers", []):
+        for market in bookmaker.get("markets", []):
+            market_key = market["key"]
+           
+            if not market_key.startswith("player_"):
+                continue
+               
+            for outcome in market.get("outcomes", []):
+                player = outcome.get("description", "")
+               
+                # Try to extract player name and team
+                player_parts = player.split(" - ")
+                player_name = player_parts[0] if len(player_parts) > 0 else player
+                player_team = player_parts[1] if len(player_parts) > 1 else ""
+               
+                # Check if player belongs to the team we're looking for
+                # This is a simplified filter - you might need to adjust based on your data
+                is_target_team = False
+                if team_name.lower() in player.lower() or (player_team and team_name.lower() in player_team.lower()):
+                    is_target_team = True
+               
+                if not is_target_team and player_team:
+                    continue
+               
+                if player not in props:
+                    props[player] = {}
+               
+                # Initialize this market for this player if not exists
+                if market_key not in props[player]:
+                    props[player][market_key] = {"line": None, "over": None, "under": None}
+               
+                # Update with the data from this outcome
+                if outcome.get("name") == "Over":
+                    props[player][market_key]["over"] = outcome.get("price")
+                    props[player][market_key]["line"] = outcome.get("point")
+                elif outcome.get("name") == "Under":
+                    props[player][market_key]["under"] = outcome.get("price")
+                    props[player][market_key]["line"] = outcome.get("point")
+
+    return props
+
+def format_props(props):
+    if not props:
+        print("No player props found.")
+        return
+       
+    print(f"\nFound props for {len(props)} players:")
+   
+    for player, markets in sorted(props.items()):
+        print(f"\n🔹 {player}")
+        for stat, info in markets.items():
+            line = info['line']
+            over = info['over']
+            under = info['under']
+           
+            # Convert odds to probabilities
+            over_prob = american_odds_to_probability(over)
+            under_prob = american_odds_to_probability(under)
+           
+            stat_name = stat.replace('player_', '').upper()
+           
+            # Format with both odds and probabilities
+            print(f"  - {stat_name}: {line}")
+            if over is not None:
+                print(f"    OVER: {over} ({over_prob}% implied probability)")
+            if under is not None:
+                print(f"    UNDER: {under} ({under_prob}% implied probability)")
+
+if __name__ == "__main__":
+    team = input("Enter the NBA team you're interested in: ")
+    game = get_team_game(team)
+
+    if not game:
+        print("No upcoming game found for that team.")
+    else:
+        print(f"Found game: {game['home_team']} vs {game['away_team']} on {game['commence_time']}")
+       
+        props = get_player_props(game['id'], team)
+       
+        if props:
+            format_props(props)
+        else:
+            print("No player props available yet for this game.")
+
