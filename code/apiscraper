@@ -1,5 +1,7 @@
 import requests
 import json
+import os
+from datetime import datetime
 
 API_KEY = "afe51d931dc36e2127002cc7dd7ff528"
 SPORT = "basketball_nba"
@@ -64,7 +66,7 @@ def get_team_game(team_name):
         print(f"Response content: {response.text[:200]}...")
         return None
 
-def get_player_props(event_id, team_name):
+def get_player_props(event_id, team_name=None):
     url = f"{API_BASE}/sports/{SPORT}/events/{event_id}/odds"
     params = {
         "apiKey": API_KEY,
@@ -108,13 +110,9 @@ def get_player_props(event_id, team_name):
                 player_name = player_parts[0] if len(player_parts) > 0 else player
                 player_team = player_parts[1] if len(player_parts) > 1 else ""
                
-                # Check if player belongs to the team we're looking for
-                # This is a simplified filter - you might need to adjust based on your data
-                is_target_team = False
-                if team_name.lower() in player.lower() or (player_team and team_name.lower() in player_team.lower()):
-                    is_target_team = True
-               
-                if not is_target_team and player_team:
+                # If team_name is provided, filter by team
+                if team_name and not (team_name.lower() in player.lower() or 
+                                    (player_team and team_name.lower() in player_team.lower())):
                     continue
                
                 if player not in props:
@@ -131,18 +129,19 @@ def get_player_props(event_id, team_name):
                 elif outcome.get("name") == "Under":
                     props[player][market_key]["under"] = outcome.get("price")
                     props[player][market_key]["line"] = outcome.get("point")
-
     return props
 
 def format_props(props):
     if not props:
         print("No player props found.")
-        return
+        return []
        
     print(f"\nFound props for {len(props)} players:")
-   
+    
+    formatted_lines = []
+    
     for player, markets in sorted(props.items()):
-        print(f"\n🔹 {player}")
+        player_lines = [f"🔹 {player}"]
         for stat, info in markets.items():
             line = info['line']
             over = info['over']
@@ -155,25 +154,58 @@ def format_props(props):
             stat_name = stat.replace('player_', '').upper()
            
             # Format with both odds and probabilities
-            print(f"  - {stat_name}: {line}")
+            player_lines.append(f"  - {stat_name}: {line}")
             if over is not None:
-                print(f"    OVER: {over} ({over_prob}% implied probability)")
+                player_lines.append(f"    OVER: {over} ({over_prob}% implied probability)")
             if under is not None:
-                print(f"    UNDER: {under} ({under_prob}% implied probability)")
+                player_lines.append(f"    UNDER: {under} ({under_prob}% implied probability)")
+        
+        formatted_lines.append("\n".join(player_lines))
+        print("\n".join(player_lines))
+    
+    return formatted_lines
+
+def save_props_to_file(game, props_content):
+    # Create a filename with team names and date
+    game_date = datetime.fromisoformat(game['commence_time'].replace('Z', '+00:00'))
+    date_str = game_date.strftime('%Y-%m-%d')
+    filename = f"{game['away_team']}_at_{game['home_team']}_{date_str}_props.txt"
+    
+    # Replace any invalid characters in filename
+    filename = filename.replace(' ', '_').replace('/', '_')
+    
+    # Create a header for the file
+    header = [
+        f"NBA PLAYER PROPS: {game['away_team']} @ {game['home_team']}",
+        f"Game Date: {game_date.strftime('%B %d, %Y at %I:%M %p UTC')}",
+        f"Generated: {datetime.now().strftime('%B %d, %Y at %I:%M %p')}",
+        "-" * 60,
+        ""
+    ]
+    
+    # Write the file
+    with open(filename, 'w') as f:
+        f.write("\n".join(header))
+        f.write("\n\n".join(props_content))
+    
+    print(f"\nSaved all props to {filename}")
+    return filename
 
 if __name__ == "__main__":
     team = input("Enter the NBA team you're interested in: ")
     game = get_team_game(team)
-
     if not game:
         print("No upcoming game found for that team.")
     else:
         print(f"Found game: {game['home_team']} vs {game['away_team']} on {game['commence_time']}")
-       
-        props = get_player_props(game['id'], team)
-       
+        
+        # Get props for BOTH teams in the game, not just the team entered
+        print("\nFetching props for ALL players in this game...")
+        props = get_player_props(game['id'])  # Not filtering by team to get all players
+        
         if props:
-            format_props(props)
+            formatted_props = format_props(props)
+            if formatted_props:
+                filename = save_props_to_file(game, formatted_props)
         else:
             print("No player props available yet for this game.")
-
