@@ -10,6 +10,9 @@ MARKETS = "player_points,player_assists,player_rebounds,player_points_rebounds_a
 ODDS_FORMAT = "american"
 API_BASE = "https://api.the-odds-api.com/v4"
 
+# Define the output directory where files will be saved
+OUTPUT_DIR = r"C:\Users\Student\NBA_Algorithm\code\Games"
+
 def american_odds_to_probability(odds):
     """Convert American odds to implied probability percentage"""
     if odds is None:
@@ -141,7 +144,8 @@ def format_props(props):
     formatted_lines = []
     
     for player, markets in sorted(props.items()):
-        player_lines = [f"🔹 {player}"]
+        # Use * instead of emoji for better compatibility
+        player_lines = [f"* {player}"]
         for stat, info in markets.items():
             line = info['line']
             over = info['over']
@@ -166,13 +170,25 @@ def format_props(props):
     return formatted_lines
 
 def save_props_to_file(game, props_content):
+    # Ensure the output directory exists
+    if not os.path.exists(OUTPUT_DIR):
+        try:
+            os.makedirs(OUTPUT_DIR)
+            print(f"Created directory: {OUTPUT_DIR}")
+        except Exception as e:
+            print(f"Error creating directory {OUTPUT_DIR}: {e}")
+            return None
+    
     # Create a filename with team names and date
     game_date = datetime.fromisoformat(game['commence_time'].replace('Z', '+00:00'))
     date_str = game_date.strftime('%Y-%m-%d')
-    filename = f"{game['away_team']}_at_{game['home_team']}_{date_str}_props.txt"
+    base_filename = f"{game['away_team']}_at_{game['home_team']}_{date_str}_props.txt"
     
     # Replace any invalid characters in filename
-    filename = filename.replace(' ', '_').replace('/', '_')
+    base_filename = base_filename.replace(' ', '_').replace('/', '_')
+    
+    # Create full path
+    full_path = os.path.join(OUTPUT_DIR, base_filename)
     
     # Create a header for the file
     header = [
@@ -183,13 +199,62 @@ def save_props_to_file(game, props_content):
         ""
     ]
     
-    # Write the file
-    with open(filename, 'w') as f:
-        f.write("\n".join(header))
-        f.write("\n\n".join(props_content))
-    
-    print(f"\nSaved all props to {filename}")
-    return filename
+    # Write the file with utf-8 encoding
+    try:
+        with open(full_path, 'w', encoding='utf-8') as f:
+            f.write("\n".join(header))
+            f.write("\n\n".join(props_content))
+        
+        print(f"\nSaved all props to: {full_path}")
+        return full_path
+    except Exception as e:
+        print(f"Error writing file: {e}")
+        
+        # Fallback to basic ASCII encoding
+        try:
+            with open(full_path, 'w', encoding='ascii', errors='replace') as f:
+                f.write("\n".join(header))
+                f.write("\n\n".join(props_content))
+            
+            print(f"\nSaved all props to: {full_path} (with limited character support)")
+            return full_path
+        except Exception as e2:
+            print(f"Failed to save file even with ASCII encoding: {e2}")
+            return None
+
+def git_add_commit_push(file_path, commit_message=None):
+    """Add the file to git, commit it and push"""
+    try:
+        import subprocess
+        
+        # Default commit message if none provided
+        if not commit_message:
+            commit_message = f"Added player props file: {os.path.basename(file_path)}"
+        
+        # Check if we're in a git repository
+        result = subprocess.run(['git', 'rev-parse', '--is-inside-work-tree'], 
+                              capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print("Not inside a git repository. Skipping git operations.")
+            return False
+        
+        # Add the file
+        subprocess.run(['git', 'add', file_path], check=True)
+        print(f"Added {file_path} to git")
+        
+        # Commit the file
+        subprocess.run(['git', 'commit', '-m', commit_message], check=True)
+        print(f"Committed changes with message: {commit_message}")
+        
+        # Push the changes
+        subprocess.run(['git', 'push'], check=True)
+        print("Successfully pushed changes to remote repository")
+        
+        return True
+    except Exception as e:
+        print(f"Error during git operations: {e}")
+        return False
 
 if __name__ == "__main__":
     team = input("Enter the NBA team you're interested in: ")
@@ -206,6 +271,9 @@ if __name__ == "__main__":
         if props:
             formatted_props = format_props(props)
             if formatted_props:
-                filename = save_props_to_file(game, formatted_props)
+                file_path = save_props_to_file(game, formatted_props)
+                if file_path:
+                    # Attempt to commit and push the file to git
+                    git_add_commit_push(file_path)
         else:
             print("No player props available yet for this game.")
