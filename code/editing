@@ -694,20 +694,22 @@ def calculate_playoff_betting_lines(player_name, team_abbr, stats_df, std_df, al
        
     return results
 
-def process_team_playoff_analysis(team_name, betting_data=None):
+def process_team_playoff_analysis(team_name, betting_data=None, summary_only=False):
     """
     Process playoff analysis for all players on a team with available betting lines.
     
     Args:
         team_name (str): The team name to analyze
         betting_data (dict, optional): Pre-loaded betting data. If None, will attempt to load from JSON.
+        summary_only (bool): If True, only prints the final summary, not individual player analyses
         
     Returns:
         list: Analysis results for each player and betting line
     """
-    print(f"\n{'='*60}")
-    print(f"TEAM PLAYOFF ANALYSIS: {team_name.upper()}")
-    print(f"{'='*60}")
+    if not summary_only:
+        print(f"\n{'='*60}")
+        print(f"TEAM PLAYOFF ANALYSIS: {team_name.upper()}")
+        print(f"{'='*60}")
     
     # Load betting lines if not provided
     if betting_data is None:
@@ -743,16 +745,19 @@ def process_team_playoff_analysis(team_name, betting_data=None):
         print(f"No players found for {team_name}")
         return []
         
-    print(f"Found {len(team_players)} players with betting lines")
+    if not summary_only:
+        print(f"Found {len(team_players)} players with betting lines")
     
     for player_name, player_data in team_players.items():
-        print(f"\n{'-'*60}")
-        print(f"Analyzing {player_name}")
+        if not summary_only:
+            print(f"\n{'-'*60}")
+            print(f"Analyzing {player_name}")
         
         # Extract player first and last name
         name_parts = player_name.split()
         if len(name_parts) < 2:
-            print(f"Warning: Could not parse name {player_name}")
+            if not summary_only:
+                print(f"Warning: Could not parse name {player_name}")
             continue
             
         first_name = name_parts[0]
@@ -761,7 +766,8 @@ def process_team_playoff_analysis(team_name, betting_data=None):
         # Get player betting lines
         player_props = player_data.get('props', {})
         if not player_props:
-            print(f"No betting lines found for {player_name}")
+            if not summary_only:
+                print(f"No betting lines found for {player_name}")
             continue
             
         # Extract betting lines
@@ -771,35 +777,55 @@ def process_team_playoff_analysis(team_name, betting_data=None):
                 betting_lines[stat] = prop_data['line']
         
         if not betting_lines:
-            print(f"No valid betting lines found for {player_name}")
+            if not summary_only:
+                print(f"No valid betting lines found for {player_name}")
             continue
             
         # Get player playoff URL
         player_url, player_id = create_player_playoff_url(first_name, last_name)
         if not player_url:
-            print(f"Could not create URL for {player_name}")
+            if not summary_only:
+                print(f"Could not create URL for {player_name}")
             continue
             
         # Get playoff games
         playoff_games = get_playoff_games(player_url)
         if playoff_games is None or playoff_games.empty:
-            print(f"No playoff data found for {player_name}")
+            if not summary_only:
+                print(f"No playoff data found for {player_name}")
             continue
             
         # Calculate playoff stats
         stats_df, std_df, valid_data = calculate_playoff_stats(playoff_games, opponent_abbr)
         if stats_df is None:
-            print(f"Could not calculate playoff stats for {player_name}")
+            if not summary_only:
+                print(f"Could not calculate playoff stats for {player_name}")
             continue
             
         # Get games vs opponent
         team_games = get_games_vs_team(valid_data, opponent_abbr)
         
-        # Analyze betting lines
-        player_results = calculate_playoff_betting_lines(
-            player_name, opponent_abbr, stats_df, std_df, valid_data, 
-            betting_lines=betting_lines, team_games=team_games
-        )
+        # Analyze betting lines - but silence the output if summary_only is True
+        if summary_only:
+            # Temporarily redirect stdout to suppress output
+            import io
+            import sys
+            original_stdout = sys.stdout
+            sys.stdout = io.StringIO()
+            
+            try:
+                player_results = calculate_playoff_betting_lines(
+                    player_name, opponent_abbr, stats_df, std_df, valid_data, 
+                    betting_lines=betting_lines, team_games=team_games
+                )
+            finally:
+                # Restore stdout
+                sys.stdout = original_stdout
+        else:
+            player_results = calculate_playoff_betting_lines(
+                player_name, opponent_abbr, stats_df, std_df, valid_data, 
+                betting_lines=betting_lines, team_games=team_games
+            )
         
         all_results.extend(player_results)
         
@@ -854,7 +880,8 @@ def main():
     
     if analysis_type == 'team':
         team_name = input("Enter team name (e.g. Denver Nuggets): ").strip()
-        results = process_team_playoff_analysis(team_name)
+        summary_only = input("Show only summary? (y/n): ").strip().lower() in ['y', 'yes']
+        results = process_team_playoff_analysis(team_name, summary_only=summary_only)
         
     else:  # Individual player analysis
         # Load available betting lines
