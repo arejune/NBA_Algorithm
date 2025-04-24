@@ -1,99 +1,124 @@
+import os
+import json
 import pandas as pd
 import numpy as np
 import re
 import requests
-import os
-import json
-from datetime import datetime
 from bs4 import BeautifulSoup
 from scipy import stats
 from io import StringIO
+from datetime import datetime
+import glob
 
-# Create directories for storing data
-DATA_DIR = "playoff_data"
-BETTING_HISTORY_DIR = os.path.join(DATA_DIR, "betting_history")
+# Define constants
+OUTPUT_DIR = r"C:\Users\Student\Desktop\NBA_Algorithm\code\games"
 
-# Ensure directories exist
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(BETTING_HISTORY_DIR, exist_ok=True)
-
-def get_player_data_filename(first_name, last_name):
-    """Generate a standardized filename for player data."""
-    return os.path.join(DATA_DIR, f"{first_name.lower()}_{last_name.lower()}_playoff_data.pkl")
-
-def get_player_betting_history_filename(first_name, last_name):
-    """Generate a standardized filename for player betting history."""
-    return os.path.join(BETTING_HISTORY_DIR, f"{first_name.lower()}_{last_name.lower()}_betting_history.json")
-
-def check_existing_data(first_name, last_name):
-    """Check if we already have data for this player and load it if available."""
-    filename = get_player_data_filename(first_name, last_name)
-    if os.path.exists(filename):
-        try:
-            return pd.read_pickle(filename)
-        except Exception as e:
-            print(f"Error loading existing data: {e}")
-    return None
-
-def save_player_data(first_name, last_name, playoff_data):
-    """Save player data to file for future use."""
-    if playoff_data is not None and not playoff_data.empty:
-        filename = get_player_data_filename(first_name, last_name)
-        try:
-            playoff_data.to_pickle(filename)
-            print(f"Player data saved to {filename}")
-            return True
-        except Exception as e:
-            print(f"Error saving player data: {e}")
-    return False
-
-def load_betting_history(first_name, last_name):
-    """Load previous betting predictions for this player."""
-    filename = get_player_betting_history_filename(first_name, last_name)
-    if os.path.exists(filename):
-        try:
-            with open(filename, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"Error loading betting history: {e}")
-    return []
-
-def save_betting_prediction(first_name, last_name, team_abbr, results):
-    """Save current betting predictions to history file."""
-    if not results:
-        return False
-        
-    filename = get_player_betting_history_filename(first_name, last_name)
-    history = load_betting_history(first_name, last_name)
+def load_betting_lines_from_json(team_name=None, player_name=None):
+    """
+    Load betting lines from JSON files in the games directory.
+    Can filter by team name and/or player name.
+    Returns a dictionary of players and their betting lines.
+    """
+    if not os.path.exists(OUTPUT_DIR):
+        print(f"Directory not found: {OUTPUT_DIR}")
+        return {}
     
-    # Create new prediction entry
-    prediction = {
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "opponent": team_abbr,
-        "lines": [],
-        "outcome_recorded": False
-    }
+    # Find all JSON files in the directory
+    json_files = glob.glob(os.path.join(OUTPUT_DIR, "*_props.json"))
+    if not json_files:
+        print(f"No prop betting files found in {OUTPUT_DIR}")
+        return {}
     
-    for result in results:
-        prediction["lines"].append({
-            "stat": result["Stat"],
-            "line": result["Line"],
-            "probability": result["Probability"],
-            "recommendation": result["Recommendation"],
-            "actual_result": None  # To be filled in later
-        })
+    # Get the most recent JSON file or filter by team
+    if team_name:
+        # Convert team name to format likely in filename
+        team_name_formatted = team_name.replace(' ', '_')
+        matching_files = [f for f in json_files if team_name_formatted in f]
+        if not matching_files:
+            print(f"No files found for team: {team_name}")
+            # Fall back to most recent file
+            matching_files = sorted(json_files, key=os.path.getmtime, reverse=True)
+    else:
+        # Just get the most recent file
+        matching_files = sorted(json_files, key=os.path.getmtime, reverse=True)
     
-    history.append(prediction)
+    if not matching_files:
+        print("No suitable JSON files found")
+        return {}
+    
+    # Use the most recent matching file
+    latest_file = matching_files[0]
+    print(f"Loading betting lines from: {os.path.basename(latest_file)}")
     
     try:
-        with open(filename, 'w') as f:
-            json.dump(history, f, indent=2)
-        print(f"Betting prediction saved to history file.")
-        return True
+        with open(latest_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # Extract game information from metadata
+        game_info = data.get('metadata', {}).get('game', {})
+        home_team = game_info.get('home_team', 'Unknown')
+        away_team = game_info.get('away_team', 'Unknown')
+        game_date = game_info.get('formatted_date', 'Unknown Date')
+        
+        print(f"Game: {away_team} at {home_team} on {game_date}")
+        
+        # Process player props
+        players_props = {}
+        player_list = data.get('props', {}).get('players', [])
+        
+        for player_data in player_list:
+            player_full_name = player_data.get('name', '')
+            player_team = player_data.get('team', '')
+            
+            # Filter by player name if specified
+            if player_name and player_name.lower() not in player_full_name.lower():
+                continue
+            
+            # Initialize player props dictionary
+            players_props[player_full_name] = {
+                'team': player_team,
+                'props': {}
+            }
+            
+            # Process each market for the player
+            for market in player_data.get('markets', []):
+                stat = market.get('stat', '')
+                line = market.get('line')
+                
+                # Skip if no line available
+                if line is None:
+                    continue
+                
+                # Map stat names to match the playoff predictor's format
+                stat_mapping = {
+                    'points': 'PTS',
+                    'assists': 'AST',
+                    'rebounds': 'TRB',
+                    'points_rebounds_assists': 'PRA'
+                }
+                
+                stat_key = stat_mapping.get(stat, stat.upper())
+                
+                players_props[player_full_name]['props'][stat_key] = {
+                    'line': line,
+                    'over_odds': market.get('over', {}).get('odds'),
+                    'over_prob': market.get('over', {}).get('implied_probability'),
+                    'under_odds': market.get('under', {}).get('odds'),
+                    'under_prob': market.get('under', {}).get('implied_probability')
+                }
+        
+        return {
+            'game_info': {
+                'home_team': home_team,
+                'away_team': away_team,
+                'date': game_date
+            },
+            'players': players_props
+        }
+        
     except Exception as e:
-        print(f"Error saving betting prediction: {e}")
-    
-    return False
+        print(f"Error loading JSON file: {e}")
+        return {}
 
 def create_player_playoff_url(first_name, last_name, season=None):
     """
@@ -121,7 +146,10 @@ def create_player_playoff_url(first_name, last_name, season=None):
    
     # Check if this URL exists
     try:
-        response = requests.get(base_url)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(base_url, headers=headers)
         if response.status_code == 200:
             return base_url, player_id
        
@@ -501,341 +529,82 @@ def calculate_betting_probability(stat_values, line_value, mean=None, std=None):
    
     return prob_over, historical_freq, mean, std
 
-def display_betting_history(first_name, last_name, team_abbr=None):
-    """Display previous betting predictions and outcomes for this player."""
-    history = load_betting_history(first_name, last_name)
-    if not history:
-        print("No betting history found for this player.")
-        return
-    
-    # Filter by team if specified
-    if team_abbr:
-        team_history = [entry for entry in history if entry.get("opponent") == team_abbr]
-        if not team_history:
-            print(f"No betting history found against {team_abbr}.")
-            # Show all teams in history
-            teams = set(entry.get("opponent") for entry in history)
-            print(f"History exists for games against: {', '.join(teams)}")
-            return
-        history = team_history
-    
-    print("\n" + "="*50)
-    print(f"BETTING HISTORY FOR {first_name.upper()} {last_name.upper()}")
-    if team_abbr:
-        print(f"Against {team_abbr}")
-    print("="*50)
-    
-    # Display most recent predictions first
-    history.reverse()
-    
-    for i, entry in enumerate(history):
-        print(f"\nDate: {entry['date']} - Opponent: {entry['opponent']}")
-        print("-" * 40)
-        
-        for line in entry["lines"]:
-            result_str = ""
-            if line.get("actual_result") is not None:
-                result = "WIN" if (line["actual_result"] > line["line"] and line["probability"] > 0.5) or \
-                                  (line["actual_result"] < line["line"] and line["probability"] < 0.5) else "LOSS"
-                result_str = f" -> ACTUAL: {line['actual_result']} ({result})"
-            
-            print(f"{line['stat']} > {line['line']}: {line['recommendation']}{result_str}")
-        
-        # Only show last 3 entries to keep it clean
-        if i >= 2 and len(history) > 3 and not team_abbr:
-            remaining = len(history) - 3
-            print(f"\n... and {remaining} more entries. Use team filter to see specific matchups.")
-            break
-
-def record_bet_outcome(first_name, last_name):
-    """Record the actual outcomes of previous bets."""
-    history = load_betting_history(first_name, last_name)
-    if not history:
-        print("No betting history found for this player.")
-        return
-    
-    # Find most recent prediction without recorded outcome
-    recent_predictions = [p for p in history if not p.get("outcome_recorded")]
-    if not recent_predictions:
-        print("No pending predictions found. All outcomes have been recorded.")
-        return
-    
-    recent = recent_predictions[-1]  # Get most recent
-    print(f"\nRecord outcome for prediction from {recent['date']} against {recent['opponent']}:")
-    
-    # Update each betting line with actual result
-    for i, line in enumerate(recent["lines"]):
-        print(f"{i+1}. {line['stat']} > {line['line']} ({line['recommendation']})")
-        result = input(f"   Enter actual {line['stat']} value (leave blank to skip): ")
-        if result.strip():
-            try:
-                recent["lines"][i]["actual_result"] = float(result)
-            except ValueError:
-                print("Invalid input. Skipping.")
-    
-    # Mark as recorded
-    recent["outcome_recorded"] = True
-    
-    # Save updated history
-    filename = get_player_betting_history_filename(first_name, last_name)
-    try:
-        with open(filename, 'w') as f:
-            json.dump(history, f, indent=2)
-        print("Bet outcomes recorded successfully!")
-    except Exception as e:
-        print(f"Error saving outcomes: {e}")
-
-# Completing the analyze_playoff_betting_lines function and adding required functionality
-
-def analyze_playoff_betting_lines(player_name, team_abbr, stats_df, std_df, all_games, team_games=None):
+def analyze_playoff_betting_lines(player_name, team_abbr, stats_df, std_df, all_games, betting_lines=None, team_games=None):
     """Analyze betting lines for playoffs with special weight on playoff context."""
     print("\n" + "="*50)
     print(f"PLAYOFF BETTING LINE ANALYSIS FOR {player_name} vs {team_abbr}")
     print("="*50)
    
-    # Split player name
-    name_parts = player_name.split()
-    first_name = name_parts[0]
-    last_name = name_parts[-1]
-    
-    # Check betting history for prefilled lines
-    history = load_betting_history(first_name, last_name)
-    latest_lines = {}
-    
-    if history:
-        # Check if there are previous lines against this team
-        team_entries = [entry for entry in history if entry.get("opponent") == team_abbr]
-        if team_entries:
-            latest_team_entry = team_entries[-1]
-            print(f"\nFound previous lines from {latest_team_entry['date']} against {team_abbr}:")
-            for line in latest_team_entry["lines"]:
-                print(f"{line['stat']}: {line['line']} ({line['recommendation']})")
-            
-            use_previous = input("\nUse these lines as starting point? (y/n): ").lower().strip()
-            if use_previous == 'y':
-                for line in latest_team_entry["lines"]:
-                    latest_lines[line['stat']] = line['line']
-    
     all_stats = ['PTS', 'AST', 'TRB', 'PRA']
-    betting_lines = {}
-   
-    # Prompt for betting lines, using historical values as defaults
-    print("\nEnter playoff betting lines (leave blank to skip):")
-    for stat in all_stats:
-        default = f" [{latest_lines.get(stat)}]" if stat in latest_lines else ""
-        line_input = input(f"{stat} line{default}: ")
-        
-        # Use default if nothing entered
-        if not line_input and stat in latest_lines:
-            betting_lines[stat] = latest_lines[stat]
-        elif line_input:
-            try:
-                betting_lines[stat] = float(line_input)
-            except ValueError:
-                print(f"Invalid value for {stat} line. Skipping.")
     
+    # If no betting lines provided, prompt for them
     if not betting_lines:
-        print("No valid betting lines entered.")
-        return None
-    
-    # Calculate probabilities and make recommendations
+        betting_lines = {}
+        print("\nEnter playoff betting lines (leave blank to skip):")
+        for stat in all_stats:
+            line_input = input(f"{stat} line: ")
+            if line_input.strip():
+                try:
+                    betting_lines[stat] = float(line_input)
+                except ValueError:
+                    print(f"Invalid input for {stat}. Skipping.")
+   
+    if not betting_lines:
+        print("No betting lines entered. Skipping analysis.")
+        return []
+   
+    # Get last 10 games specifically for analysis
+    # Make sure they're valid games with stats
+    last_10_games = all_games.head(10)
+   
+    # Analyze each entered betting line
     results = []
-    
-    print("\n" + "-"*50)
-    print("BETTING ANALYSIS RESULTS")
-    print("-"*50)
-    
     for stat, line in betting_lines.items():
-        # Get the row for this stat
-        stat_row = stats_df[stats_df['Stat'] == stat].iloc[0]
-        std_row = std_df[std_df['Stat'] == stat].iloc[0]
-        
-        # Get values for different scenarios
-        career_avg = stat_row['Playoff Career Avg']
-        career_std = std_row['Playoff Career StdDev']
-        last_10_avg = stat_row['Last 10 Playoff Games Avg']
-        last_10_std = std_row['Last 10 Playoff Games StdDev']
-        
-        vs_team_avg = stat_row[f'Vs {team_abbr} Playoff Avg']
-        vs_team_std = std_row[f'Vs {team_abbr} Playoff StdDev']
-        
-        # Calculate probabilities for different datasets
-        stat_values = all_games[stat].dropna() if stat in all_games.columns else pd.Series([])
-        
-        # If team_games exists and contains data for this stat, use it
-        team_stat_values = None
-        if team_games is not None and not team_games.empty and stat in team_games.columns:
-            team_stat_values = team_games[stat].dropna()
-        
-        # Calculate overall playoff probability
-        career_prob, career_freq, _, _ = calculate_betting_probability(
-            stat_values, line, mean=career_avg, std=career_std)
-        
-        # Calculate probability based on last 10 games
-        last_10_values = all_games.head(10)[stat].dropna() if stat in all_games.columns else pd.Series([])
-        recent_prob, recent_freq, _, _ = calculate_betting_probability(
-            last_10_values, line, mean=last_10_avg, std=last_10_std)
-        
-        # Calculate probability based on games vs this team
-        team_prob, team_freq, _, _ = calculate_betting_probability(
-            team_stat_values if team_stat_values is not None else pd.Series([]), 
-            line, mean=vs_team_avg, std=vs_team_std)
-        
-        # Weighted probability calculation
-        weights = {
-            'career': 0.3,
-            'recent': 0.4,
-            'team': 0.3
-        }
-        
-        # Adjust weights if some data isn't available
-        if pd.isna(team_prob) or team_prob is None:
-            weights['career'] += weights['team'] / 2
-            weights['recent'] += weights['team'] / 2
-            weights['team'] = 0
-            
-        if pd.isna(recent_prob) or recent_prob is None:
-            weights['career'] += weights['recent']
-            weights['recent'] = 0
-        
-        # Calculate weighted probability
-        weighted_prob = 0
-        if career_prob is not None:
-            weighted_prob += career_prob * weights['career']
-        if recent_prob is not None:
-            weighted_prob += recent_prob * weights['recent']
-        if team_prob is not None:
-            weighted_prob += team_prob * weights['team']
-            
-        # Make recommendation
-        if weighted_prob > 0.65:
-            recommendation = f"STRONG BET OVER ({weighted_prob:.1%})"
-        elif weighted_prob > 0.55:
-            recommendation = f"LEAN OVER ({weighted_prob:.1%})"
-        elif weighted_prob < 0.35:
-            recommendation = f"STRONG BET UNDER ({weighted_prob:.1%})"
-        elif weighted_prob < 0.45:
-            recommendation = f"LEAN UNDER ({weighted_prob:.1%})"
-        else:
-            recommendation = f"AVOID ({weighted_prob:.1%})"
-            
-        # Store results
-        result = {
-            "Stat": stat,
-            "Line": line,
-            "Probability": round(weighted_prob, 3),
-            "Recommendation": recommendation,
-            "Career_Prob": round(career_prob, 3) if career_prob is not None else None,
-            "Recent_Prob": round(recent_prob, 3) if recent_prob is not None else None,
-            "Team_Prob": round(team_prob, 3) if team_prob is not None else None
-        }
-        results.append(result)
-        
-        # Display results
-        print(f"\n{stat} Line: {line}")
-        print(f"Career Avg: {career_avg:.1f} (StdDev: {career_std:.1f}) - Prob Over: {career_prob:.1%} if available")
-        print(f"Last 10 Avg: {last_10_avg:.1f} (StdDev: {last_10_std:.1f}) - Prob Over: {recent_prob:.1%} if available")
-        print(f"Vs {team_abbr} Avg: {vs_team_avg:.1f} (StdDev: {vs_team_std:.1f}) - Prob Over: {team_prob:.1%} if available")
-        print(f"Weighted Probability: {weighted_prob:.1%}")
-        print(f"Recommendation: {recommendation}")
-        
-    # Save betting prediction to history file
-    if results:
-        save_betting_prediction(first_name, last_name, team_abbr, results)
-        
-    return results
-
-def main():
-    """Main function to run the playoff betting predictor."""
-    print("\n" + "="*60)
-    print("NBA PLAYOFF PLAYER PERFORMANCE PREDICTOR".center(60))
-    print("="*60)
-    
-    # Get player name
-    player_name = input("\nEnter player name (First Last): ")
-    if not player_name.strip():
-        print("Player name is required.")
-        return
-    
-    # Split name into first and last
-    name_parts = player_name.split()
-    if len(name_parts) < 2:
-        print("Please enter both first and last name.")
-        return
-    
-    first_name = name_parts[0]
-    last_name = name_parts[-1]
-    
-    # Check for existing data
-    existing_data = check_existing_data(first_name, last_name)
-    
-    if existing_data is not None:
-        print(f"Found existing playoff data for {player_name}!")
-        use_existing = input("Use existing data? (y/n): ").lower().strip()
-        if use_existing == 'y':
-            playoff_data = existing_data
-        else:
-            # Fetch new data
-            player_url, player_id = create_player_playoff_url(first_name, last_name)
-            if player_url:
-                print(f"Fetching playoff data for {player_name}...")
-                playoff_data = get_playoff_games(player_url)
-                if playoff_data is not None:
-                    save_player_data(first_name, last_name, playoff_data)
+        print(f"\n{'-'*40}")
+        print(f"Playoff Analysis for {player_name} {stat} > {line}")
+        print(f"{'-'*40}")
+       
+        # Get index for this stat
+        try:
+            stat_idx = stats_df[stats_df['Stat'] == stat].index[0]
+           
+            # Get means and standard deviations from our pre-calculated DataFrames
+            playoff_avg = stats_df.loc[stat_idx, 'Playoff Career Avg']
+            last_10_avg = stats_df.loc[stat_idx, 'Last 10 Playoff Games Avg']
+            team_avg = stats_df.loc[stat_idx, f'Vs {team_abbr} Playoff Avg']
+           
+            playoff_std = std_df.loc[stat_idx, 'Playoff Career StdDev']
+            last_10_std = std_df.loc[stat_idx, 'Last 10 Playoff Games StdDev']
+            team_std = std_df.loc[stat_idx, f'Vs {team_abbr} Playoff StdDev']
+           
+            # Calculate probabilities based on last 10 playoff games
+            if 'PRA' in last_10_games.columns and stat == 'PRA':
+                prob_over_10, freq_over_10, _, _ = calculate_betting_probability(
+                    last_10_games['PRA'], line, last_10_avg, last_10_std
+                )
+            elif stat in last_10_games.columns:
+                prob_over_10, freq_over_10, _, _ = calculate_betting_probability(
+                    last_10_games[stat], line, last_10_avg, last_10_std
+                )
             else:
-                print(f"Could not create URL for {player_name}.")
-                return
-    else:
-        # No existing data, fetch new data
-        player_url, player_id = create_player_playoff_url(first_name, last_name)
-        if player_url:
-            print(f"Fetching playoff data for {player_name}...")
-            playoff_data = get_playoff_games(player_url)
-            if playoff_data is not None:
-                save_player_data(first_name, last_name, playoff_data)
-        else:
-            print(f"Could not create URL for {player_name}.")
-            return
-    
-    if playoff_data is None or playoff_data.empty:
-        print(f"No playoff data found for {player_name}.")
-        return
-        
-    # User options
-    print("\nOptions:")
-    print("1. Analyze betting lines vs specific team")
-    print("2. Display betting history")
-    print("3. Record bet outcome")
-    
-    option = input("Select option (1-3): ")
-    
-    if option == '1':
-        # Get opponent team
-        team_abbr = input("\nEnter opponent team abbreviation (e.g., BOS, LAL): ").upper()
-        if not team_abbr.strip():
-            print("Team abbreviation is required.")
-            return
-            
-        # Calculate player stats
-        stats_df, std_df, all_games = calculate_playoff_stats(playoff_data, team_abbr)
-        
-        # Get games vs team
-        team_games = get_games_vs_team(all_games, team_abbr)
-        
-        # Analyze betting lines
-        analyze_playoff_betting_lines(player_name, team_abbr, stats_df, std_df, all_games, team_games)
-        
-    elif option == '2':
-        # Display betting history
-        team_abbr = input("\nEnter team abbreviation to filter (leave blank for all): ").upper().strip()
-        display_betting_history(first_name, last_name, team_abbr if team_abbr else None)
-        
-    elif option == '3':
-        # Record bet outcome
-        record_bet_outcome(first_name, last_name)
-        
-    else:
-        print("Invalid option.")
-
-if __name__ == "__main__":
-    main()
+                prob_over_10, freq_over_10 = None, None
+           
+            # Calculate probabilities based on playoff games against this team
+            if team_games is not None and not team_games.empty:
+                if 'PRA' in team_games.columns and stat == 'PRA':
+                    prob_over_team, freq_over_team, _, _ = calculate_betting_probability(
+                        team_games['PRA'], line, team_avg, team_std
+                    )
+                elif stat in team_games.columns:
+                    prob_over_team, freq_over_team, _, _ = calculate_betting_probability(
+                        team_games[stat], line, team_avg, team_std
+                    )
+                else:
+                    prob_over_team, freq_over_team = None, None
+            else:
+                prob_over_team, freq_over_team = None, None
+           
+            # Calculate career playoff probability
+            if 'PRA' in all_games.columns and stat == 'PRA':
+                prob_over_career, freq_over_career, _, _ = calculate_betting_probability(
+                    all_games['PRA'].dropna(), line, playoff_avg, playoff_
