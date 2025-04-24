@@ -11,7 +11,7 @@ ODDS_FORMAT = "american"
 API_BASE = "https://api.the-odds-api.com/v4"
 
 # Define the output directory where files will be saved
-OUTPUT_DIR = r"C:\Users\Student\NBA_Algorithm\code\Games"
+OUTPUT_DIR = r"C:\Users\Student\Desktop\NBA_Algorithm\code\games"
 
 def american_odds_to_probability(odds):
     """Convert American odds to implied probability percentage"""
@@ -134,42 +134,65 @@ def get_player_props(event_id, team_name=None):
                     props[player][market_key]["line"] = outcome.get("point")
     return props
 
-def format_props(props):
+def format_props_to_json(props):
+    """Convert props data to structured JSON format"""
     if not props:
         print("No player props found.")
-        return []
-       
+        return None
+    
     print(f"\nFound props for {len(props)} players:")
     
-    formatted_lines = []
+    json_data = {
+        "players": []
+    }
     
     for player, markets in sorted(props.items()):
-        # Use * instead of emoji for better compatibility
-        player_lines = [f"* {player}"]
+        player_data = {
+            "name": player,
+            "markets": []
+        }
+        
+        # Try to extract player name and team
+        player_parts = player.split(" - ")
+        if len(player_parts) > 1:
+            player_data["name"] = player_parts[0]
+            player_data["team"] = player_parts[1]
+        
         for stat, info in markets.items():
             line = info['line']
             over = info['over']
             under = info['under']
-           
+            
             # Convert odds to probabilities
             over_prob = american_odds_to_probability(over)
             under_prob = american_odds_to_probability(under)
-           
-            stat_name = stat.replace('player_', '').upper()
-           
-            # Format with both odds and probabilities
-            player_lines.append(f"  - {stat_name}: {line}")
-            if over is not None:
-                player_lines.append(f"    OVER: {over} ({over_prob}% implied probability)")
-            if under is not None:
-                player_lines.append(f"    UNDER: {under} ({under_prob}% implied probability)")
+            
+            stat_name = stat.replace('player_', '')
+            
+            market_data = {
+                "stat": stat_name,
+                "line": line,
+                "over": {
+                    "odds": over,
+                    "implied_probability": over_prob
+                },
+                "under": {
+                    "odds": under,
+                    "implied_probability": under_prob
+                }
+            }
+            
+            player_data["markets"].append(market_data)
+            
+            # Print summary for console output
+            print(f"* {player} - {stat_name.upper()}: {line} (Over: {over}, Under: {under})")
         
-        formatted_lines.append("\n".join(player_lines))
-        print("\n".join(player_lines))
+        json_data["players"].append(player_data)
     
-    return formatted_lines
+    return json_data
 
-def save_props_to_file(game, props_content):
+def save_props_to_json(game, props_data):
+    """Save the props data as a JSON file"""
     # Ensure the output directory exists
     if not os.path.exists(OUTPUT_DIR):
         try:
@@ -182,7 +205,7 @@ def save_props_to_file(game, props_content):
     # Create a filename with team names and date
     game_date = datetime.fromisoformat(game['commence_time'].replace('Z', '+00:00'))
     date_str = game_date.strftime('%Y-%m-%d')
-    base_filename = f"{game['away_team']}_at_{game['home_team']}_{date_str}_props.txt"
+    base_filename = f"{game['away_team']}_at_{game['home_team']}_{date_str}_props.json"
     
     # Replace any invalid characters in filename
     base_filename = base_filename.replace(' ', '_').replace('/', '_')
@@ -190,37 +213,30 @@ def save_props_to_file(game, props_content):
     # Create full path
     full_path = os.path.join(OUTPUT_DIR, base_filename)
     
-    # Create a header for the file
-    header = [
-        f"NBA PLAYER PROPS: {game['away_team']} @ {game['home_team']}",
-        f"Game Date: {game_date.strftime('%B %d, %Y at %I:%M %p UTC')}",
-        f"Generated: {datetime.now().strftime('%B %d, %Y at %I:%M %p')}",
-        "-" * 60,
-        ""
-    ]
+    # Add metadata to the JSON
+    output_json = {
+        "metadata": {
+            "game": {
+                "away_team": game['away_team'],
+                "home_team": game['home_team'],
+                "commence_time": game['commence_time'],
+                "formatted_date": game_date.strftime('%B %d, %Y at %I:%M %p UTC')
+            },
+            "generated_at": datetime.now().isoformat()
+        },
+        "props": props_data
+    }
     
-    # Write the file with utf-8 encoding
+    # Write the JSON file
     try:
         with open(full_path, 'w', encoding='utf-8') as f:
-            f.write("\n".join(header))
-            f.write("\n\n".join(props_content))
+            json.dump(output_json, f, indent=2, ensure_ascii=False)
         
-        print(f"\nSaved all props to: {full_path}")
+        print(f"\nSaved all props to JSON: {full_path}")
         return full_path
     except Exception as e:
-        print(f"Error writing file: {e}")
-        
-        # Fallback to basic ASCII encoding
-        try:
-            with open(full_path, 'w', encoding='ascii', errors='replace') as f:
-                f.write("\n".join(header))
-                f.write("\n\n".join(props_content))
-            
-            print(f"\nSaved all props to: {full_path} (with limited character support)")
-            return full_path
-        except Exception as e2:
-            print(f"Failed to save file even with ASCII encoding: {e2}")
-            return None
+        print(f"Error writing JSON file: {e}")
+        return None
 
 def git_add_commit_push(file_path, commit_message=None):
     """Add the file to git, commit it and push"""
@@ -229,7 +245,7 @@ def git_add_commit_push(file_path, commit_message=None):
         
         # Default commit message if none provided
         if not commit_message:
-            commit_message = f"Added player props file: {os.path.basename(file_path)}"
+            commit_message = f"Added player props JSON file: {os.path.basename(file_path)}"
         
         # Check if we're in a git repository
         result = subprocess.run(['git', 'rev-parse', '--is-inside-work-tree'], 
@@ -269,9 +285,9 @@ if __name__ == "__main__":
         props = get_player_props(game['id'])  # Not filtering by team to get all players
         
         if props:
-            formatted_props = format_props(props)
-            if formatted_props:
-                file_path = save_props_to_file(game, formatted_props)
+            json_data = format_props_to_json(props)
+            if json_data:
+                file_path = save_props_to_json(game, json_data)
                 if file_path:
                     # Attempt to commit and push the file to git
                     git_add_commit_push(file_path)
