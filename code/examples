@@ -1,0 +1,65 @@
+NBA Playoff Prop Betting Analyzer
+========================================
+Analyze a team or player? (team/player): team
+Enter team name (e.g. Denver Nuggets): Denver Nuggets
+Show only summary? (y/n): y
+Loading betting lines from: Denver_Nuggets_at_Los_Angeles_Clippers_2025-04-25_props.json
+Game: Denver Nuggets at Los Angeles Clippers on April 25, 2025 at 02:05 AM UTC
+No playoff tables found at https://www.basketball-reference.com/players/j/jonesde01/gamelog-playoffs/#player_game_log_post
+Tables exist but could not be properly accessed. Website structure may have changed.
+
+============================================================
+TEAM PLAYOFF ANALYSIS SUMMARY: Denver Nuggets vs Los Angeles Clippers
+============================================================
+
+----------------------------------------
+AST BETS SUMMARY
+----------------------------------------
+STRONG OVER: Bogdan Bogdanovic AST > 1.5 (72.9%)
+STRONG OVER: Aaron Gordon AST > 2.5 (68.8%)
+CONSIDER UNDER: Norman Powell AST < 1.5 (42.5%)
+STRONG UNDER: James Harden AST < 8.5 (39.5%)
+STRONG UNDER: Nikola Jokic AST < 9.5 (35.7%)
+STRONG UNDER: Michael Porter Jr AST < 1.5 (23.0%)
+STRONG UNDER: Ivica Zubac AST < 2.5 (13.6%)
+STRONG UNDER: Christian Braun AST < 2.5 (6.8%)
+STRONG UNDER: Kris Dunn AST < 2.5 (6.0%)
+
+----------------------------------------
+PTS BETS SUMMARY
+----------------------------------------
+STRONG OVER: Bogdan Bogdanovic PTS > 5.5 (76.9%)
+STRONG OVER: Russell Westbrook PTS > 11.5 (62.2%)
+CONSIDER UNDER: Aaron Gordon PTS < 15.5 (44.3%)
+STRONG UNDER: James Harden PTS < 23.5 (38.1%)
+STRONG UNDER: Ivica Zubac PTS < 16.5 (32.4%)
+STRONG UNDER: Norman Powell PTS < 16.5 (31.9%)
+STRONG UNDER: Kris Dunn PTS < 6.5 (19.1%)
+STRONG UNDER: Christian Braun PTS < 11.5 (5.4%)
+
+----------------------------------------
+PRA BETS SUMMARY
+----------------------------------------
+STRONG OVER: Bogdan Bogdanovic PRA > 8.5 (81.8%)
+STRONG OVER: Russell Westbrook PRA > 19.5 (62.3%)
+CONSIDER UNDER: Michael Porter Jr PRA < 21.5 (43.3%)
+STRONG UNDER: James Harden PRA < 37.5 (34.9%)
+STRONG UNDER: Norman Powell PRA < 20.5 (33.5%)
+STRONG UNDER: Kris Dunn PRA < 11.5 (18.4%)
+STRONG UNDER: Ivica Zubac PRA < 32.5 (17.3%)
+STRONG UNDER: Peyton Watson PRA < 7.5 (9.0%)
+STRONG UNDER: Christian Braun PRA < 18.5 (3.7%)
+
+----------------------------------------
+TRB BETS SUMMARY
+----------------------------------------
+STRONG OVER: Bogdan Bogdanovic TRB > 1.5 (82.4%)
+STRONG OVER: Russell Westbrook TRB > 4.5 (64.2%)
+STRONG OVER: Aaron Gordon TRB > 5.5 (61.9%)
+CONSIDER OVER: Kawhi Leonard TRB > 6.5 (57.7%)
+CONSIDER UNDER: James Harden TRB < 5.5 (41.6%)
+CONSIDER UNDER: Kris Dunn TRB < 2.5 (40.1%)
+STRONG UNDER: Peyton Watson TRB < 2.5 (32.6%)
+STRONG UNDER: Ivica Zubac TRB < 12.5 (19.4%)
+STRONG UNDER: Christian Braun TRB < 4.5 (14.4%)
+PS C:\Users\Student> 
