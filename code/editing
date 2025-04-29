@@ -11,7 +11,7 @@ from io import StringIO
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
-API_KEY = "YOUR_API_KEY"  # Replace with your actual API key
+API_KEY = "afe51d931dc36e2127002cc7dd7ff528"  # Replace with your actual API key
 SPORT = "basketball_nba"
 REGION = "us"
 MARKETS = "player_points,player_assists,player_rebounds,player_points_rebounds_assists"
