@@ -1,3 +1,5 @@
+import os
+import json
 import pandas as pd
 import numpy as np
 import re
@@ -5,6 +7,118 @@ import requests
 from bs4 import BeautifulSoup
 from scipy import stats
 from io import StringIO
+from datetime import datetime
+import glob
+
+# Define constants
+OUTPUT_DIR = r"C:\Users\Student\Desktop\NBA_Algorithm\code\games"
+
+def load_betting_lines_from_json(team_name=None, player_name=None):
+    """
+    Load betting lines from JSON files in the games directory.
+    Can filter by team name and/or player name.
+    Returns a dictionary of players and their betting lines.
+    """
+    if not os.path.exists(OUTPUT_DIR):
+        print(f"Directory not found: {OUTPUT_DIR}")
+        return {}
+    
+    # Find all JSON files in the directory
+    json_files = glob.glob(os.path.join(OUTPUT_DIR, "*_props.json"))
+    if not json_files:
+        print(f"No prop betting files found in {OUTPUT_DIR}")
+        return {}
+    
+    # Get the most recent JSON file or filter by team
+    if team_name:
+        # Convert team name to format likely in filename
+        team_name_formatted = team_name.replace(' ', '_')
+        matching_files = [f for f in json_files if team_name_formatted in f]
+        if not matching_files:
+            print(f"No files found for team: {team_name}")
+            # Fall back to most recent file
+            matching_files = sorted(json_files, key=os.path.getmtime, reverse=True)
+    else:
+        # Just get the most recent file
+        matching_files = sorted(json_files, key=os.path.getmtime, reverse=True)
+    
+    if not matching_files:
+        print("No suitable JSON files found")
+        return {}
+    
+    # Use the most recent matching file
+    latest_file = matching_files[0]
+    print(f"Loading betting lines from: {os.path.basename(latest_file)}")
+    
+    try:
+        with open(latest_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # Extract game information from metadata
+        game_info = data.get('metadata', {}).get('game', {})
+        home_team = game_info.get('home_team', 'Unknown')
+        away_team = game_info.get('away_team', 'Unknown')
+        game_date = game_info.get('formatted_date', 'Unknown Date')
+        
+        print(f"Game: {away_team} at {home_team} on {game_date}")
+        
+        # Process player props
+        players_props = {}
+        player_list = data.get('props', {}).get('players', [])
+        
+        for player_data in player_list:
+            player_full_name = player_data.get('name', '')
+            player_team = player_data.get('team', '')
+            
+            # Filter by player name if specified
+            if player_name and player_name.lower() not in player_full_name.lower():
+                continue
+            
+            # Initialize player props dictionary
+            players_props[player_full_name] = {
+                'team': player_team,
+                'props': {}
+            }
+            
+            # Process each market for the player
+            for market in player_data.get('markets', []):
+                stat = market.get('stat', '')
+                line = market.get('line')
+                
+                # Skip if no line available
+                if line is None:
+                    continue
+                
+                # Map stat names to match the playoff predictor's format
+                stat_mapping = {
+                    'points': 'PTS',
+                    'assists': 'AST',
+                    'rebounds': 'TRB',
+                    'points_rebounds_assists': 'PRA'
+                }
+                
+                stat_key = stat_mapping.get(stat, stat.upper())
+                
+                players_props[player_full_name]['props'][stat_key] = {
+                    'line': line,
+                    'over_odds': market.get('over', {}).get('odds'),
+                    'over_prob': market.get('over', {}).get('implied_probability'),
+                    'under_odds': market.get('under', {}).get('odds'),
+                    'under_prob': market.get('under', {}).get('implied_probability')
+                }
+        
+        return {
+            'game_info': {
+                'home_team': home_team,
+                'away_team': away_team,
+                'date': game_date
+            },
+            'players': players_props
+        }
+        
+    except Exception as e:
+        print(f"Error loading JSON file: {e}")
+        return {}
 
 def create_player_playoff_url(first_name, last_name, season=None):
     """
@@ -32,7 +146,10 @@ def create_player_playoff_url(first_name, last_name, season=None):
    
     # Check if this URL exists
     try:
-        response = requests.get(base_url)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(base_url, headers=headers)
         if response.status_code == 200:
             return base_url, player_id
        
@@ -412,28 +529,29 @@ def calculate_betting_probability(stat_values, line_value, mean=None, std=None):
    
     return prob_over, historical_freq, mean, std
 
-def analyze_playoff_betting_lines(player_name, team_abbr, stats_df, std_df, all_games, team_games=None):
+def calculate_playoff_betting_lines(player_name, team_abbr, stats_df, std_df, all_games, betting_lines=None, team_games=None):
     """Analyze betting lines for playoffs with special weight on playoff context."""
     print("\n" + "="*50)
     print(f"PLAYOFF BETTING LINE ANALYSIS FOR {player_name} vs {team_abbr}")
     print("="*50)
    
     all_stats = ['PTS', 'AST', 'TRB', 'PRA']
-    betting_lines = {}
-   
-    # Prompt for betting lines
-    print("\nEnter playoff betting lines (leave blank to skip):")
-    for stat in all_stats:
-        line_input = input(f"{stat} line: ")
-        if line_input.strip():
-            try:
-                betting_lines[stat] = float(line_input)
-            except ValueError:
-                print(f"Invalid input for {stat}. Skipping.")
+    
+    # If no betting lines provided, prompt for them
+    if not betting_lines:
+        betting_lines = {}
+        print("\nEnter playoff betting lines (leave blank to skip):")
+        for stat in all_stats:
+            line_input = input(f"{stat} line: ")
+            if line_input.strip():
+                try:
+                    betting_lines[stat] = float(line_input)
+                except ValueError:
+                    print(f"Invalid input for {stat}. Skipping.")
    
     if not betting_lines:
         print("No betting lines entered. Skipping analysis.")
-        return
+        return []
    
     # Get last 10 games specifically for analysis
     # Make sure they're valid games with stats
@@ -498,341 +616,402 @@ def analyze_playoff_betting_lines(player_name, team_abbr, stats_df, std_df, all_
             else:
                 prob_over_career, freq_over_career = None, None
            
-            # Weighted average probability - playoff specific weighting
-            # 50% weight to recent playoff form, 30% to team-specific playoff stats, 20% to career playoff stats
-            weights_sum = 0
-            weighted_prob = 0
-           
-            if prob_over_10 is not None:
-                weighted_prob += 0.5 * prob_over_10
-                weights_sum += 0.5
-           
-            if prob_over_team is not None:
-                weighted_prob += 0.3 * prob_over_team
-                weights_sum += 0.3
-           
-            if prob_over_career is not None:
-                weighted_prob += 0.2 * prob_over_career
-                weights_sum += 0.2
-           
-            if weights_sum > 0:
-                final_prob = weighted_prob / weights_sum
+            # Print analysis results
+            print(f"Career Playoff Average: {playoff_avg:.1f} {stat} (StdDev: {playoff_std:.1f})")
+            if not pd.isna(prob_over_career):
+                print(f"Career Playoff Probability > {line}: {prob_over_career:.1%}")
+                print(f"Career Playoff Historical Frequency > {line}: {freq_over_career:.1%}")
             else:
-                final_prob = None
+                print(f"Insufficient career playoff data for {stat} analysis")
            
-            # Print results
-            print(f"Playoff Career Average: {playoff_avg:.1f}")
-            print(f"Last 10 Playoff Games Average: {last_10_avg:.1f}")
-            if not np.isnan(team_avg):
-                print(f"Playoff Average vs {team_abbr}: {team_avg:.1f}")
+            print(f"\nLast 10 Playoff Games Average: {last_10_avg:.1f} {stat} (StdDev: {last_10_std:.1f})")
+            if not pd.isna(prob_over_10):
+                print(f"Last 10 Playoff Games Probability > {line}: {prob_over_10:.1%}")
+                print(f"Last 10 Playoff Games Historical Frequency > {line}: {freq_over_10:.1%}")
+            else:
+                print(f"Insufficient recent playoff data for {stat} analysis")
            
-            if prob_over_10 is not None and freq_over_10 is not None:
-                print(f"\nLast 10 Playoff Games:")
-                print(f"- Exceeded {line} in {int(freq_over_10*100)}% of games")
-                print(f"- Statistical probability of exceeding {line}: {prob_over_10*100:.1f}%")
-           
-            if prob_over_team is not None and freq_over_team is not None and not np.isnan(team_avg):
-                print(f"\nPlayoff Games vs {team_abbr}:")
-                print(f"- Exceeded {line} in {int(freq_over_team*100)}% of games")
-                print(f"- Statistical probability of exceeding {line}: {prob_over_team*100:.1f}%")
-           
-            if final_prob is not None:
-                print(f"\nFINAL PLAYOFF RECOMMENDATION:")
-                if final_prob > 0.65:
-                    recommendation = f"STRONG OVER ({final_prob*100:.1f}%)"
-                elif final_prob > 0.55:
-                    recommendation = f"LEAN OVER ({final_prob*100:.1f}%)"
-                elif final_prob < 0.35:
-                    recommendation = f"STRONG UNDER ({(1-final_prob)*100:.1f}%)"
-                elif final_prob < 0.45:
-                    recommendation = f"LEAN UNDER ({(1-final_prob)*100:.1f}%)"
+            if not pd.isna(team_avg):
+                print(f"\nVs {team_abbr} Playoff Average: {team_avg:.1f} {stat} (StdDev: {team_std:.1f})")
+                if not pd.isna(prob_over_team):
+                    print(f"Vs {team_abbr} Probability > {line}: {prob_over_team:.1%}")
+                    print(f"Vs {team_abbr} Historical Frequency > {line}: {freq_over_team:.1%}")
                 else:
-                    recommendation = f"COIN FLIP ({final_prob*100:.1f}%)"
-                print(f"{stat} > {line}: {recommendation}")
-               
-                # Store results for summary
-                results.append({
-                    'Stat': stat,
-                    'Line': line,
-                    'Probability': final_prob,
-                    'Recommendation': recommendation
-                })
+                    print(f"Insufficient playoff data vs {team_abbr} for {stat} analysis")
             else:
-                print("Insufficient data for recommendation")
-       
-        except (IndexError, KeyError) as e:
-            print(f"Error analyzing {stat}: {e}")
-            continue
-   
-    # Print summary
-    if results:
-        print("\n" + "="*50)
-        print("SUMMARY OF PLAYOFF RECOMMENDATIONS")
-        print("="*50)
-        for result in results:
-            print(f"{result['Stat']} > {result['Line']}: {result['Recommendation']}")
-
-def analyze_series_context(series_df, team_abbr=None):
-    """Analyze performance based on series context (game number, home/away, etc.)"""
-    if series_df is None or series_df.empty:
-        print("No playoff data available for series context analysis.")
-        return
-   
-    print("\n" + "="*50)
-    print("PLAYOFF SERIES CONTEXT ANALYSIS")
-    print("="*50)
-   
-    # Make a clean copy to avoid pandas warnings
-    df = series_df.copy()
-   
-    # Filter by team if specified
-    if team_abbr:
-        team_df = df[df['Opp'].str.contains(team_abbr, na=False)].copy()
-        if team_df.empty:
-            print(f"No playoff games found against {team_abbr}")
-            team_df = df  # Use all data if no games against specified team
-        else:
-            df = team_df
-   
-    # Add home/away indicator
-    if '@' in df.columns:
-        df.loc[:, 'Home'] = ~df['@'].notna()
-    else:
-        # Try to determine home/away from other columns
-        if 'Location' in df.columns:
-            # Some data may have a Location column instead
-            df.loc[:, 'Home'] = df['Location'].apply(lambda x: 'H' in str(x).upper() if pd.notna(x) else False)
-        elif 'Venue' in df.columns:
-            # Or a Venue column
-            df.loc[:, 'Home'] = df['Venue'].apply(lambda x: 'H' in str(x).upper() if pd.notna(x) else False)
-        else:
-            print("Could not determine home/away status for games. Assuming neutral venue.")
-            df.loc[:, 'Home'] = False
-   
-    # Game number analysis
-    print("\nPerformance by Game Number in Series:")
-    if 'Gm' in df.columns and not df['Gm'].isna().all():
-        game_num_col = 'Gm'
-    elif 'Game_In_Series' in df.columns and not df['Game_In_Series'].isna().all():
-        game_num_col = 'Game_In_Series'
-    else:
-        game_num_col = None
-        print("Game number information not available in data.")
-   
-    if game_num_col:
-        # Convert to numeric and handle non-numeric values
-        df.loc[:, game_num_col] = pd.to_numeric(df[game_num_col], errors='coerce')
-       
-        # Group by game number if we have valid data
-        valid_games = df[df[game_num_col].notna()].copy()
-        if not valid_games.empty and 'PTS' in valid_games.columns:
-            try:
-                game_num_stats = valid_games.groupby(game_num_col)['PTS'].agg(['mean', 'std', 'count']).reset_index()
-                game_num_stats.columns = ['Game Number', 'Avg PTS', 'StdDev', 'Games']
-                game_num_stats = game_num_stats.sort_values('Game Number')
-                print(game_num_stats.round(1))
-            except Exception as e:
-                print(f"Error calculating game number statistics: {e}")
-        else:
-            print("No valid game number data available.")
-   
-    # Home vs Away analysis
-    print("\nHome vs Away Performance:")
-    try:
-        required_cols = ['PTS', 'AST', 'TRB']
-        available_cols = [col for col in required_cols if col in df.columns]
-       
-        if available_cols and not df['Home'].isna().all():
-            home_away_stats = df.groupby('Home')[available_cols].agg(['mean', 'std', 'count']).reset_index()
-            home_away_stats.loc[:, 'Location'] = home_away_stats['Home'].map({True: 'Home', False: 'Away'})
+                print(f"\nNo playoff games found against {team_abbr}")
            
-            # Properly drop 'Home' from MultiIndex
-            home_away_stats = home_away_stats.drop(('Home', ''), axis=1)
+            # Calculate weighted average probability
+            # Weight: 20% career, 50% recent, 30% team-specific (if available)
+            weights = [0.2, 0.5, 0.3]
+            probs = [prob_over_career, prob_over_10, prob_over_team]
+            
+            # Filter out None values and adjust weights
+            valid_probs = [p for p in probs if p is not None]
+            if len(valid_probs) == 0:
+                weighted_prob = None
+            elif len(valid_probs) < len(probs):
+                # Adjust weights for missing data
+                valid_weights = weights[:len(valid_probs)]
+                valid_weights = [w/sum(valid_weights) for w in valid_weights]
+                weighted_prob = sum(p * w for p, w in zip(valid_probs, valid_weights))
+            else:
+                weighted_prob = sum(p * w for p, w in zip(probs, weights))
            
-            # Reorganize for better display
-            stats_display = pd.DataFrame({'Location': home_away_stats['Location']})
+            # Store result for return
+            result = {
+                'player': player_name,
+                'stat': stat,
+                'line': line,
+                'career_avg': playoff_avg,
+                'last_10_avg': last_10_avg,
+                'team_avg': team_avg,
+                'prob_career': prob_over_career,
+                'prob_last_10': prob_over_10,
+                'prob_vs_team': prob_over_team,
+                'weighted_prob': weighted_prob
+            }
+            results.append(result)
            
-            for col in available_cols:
-                try:
-                    stats_display[f'{col} Avg'] = home_away_stats[(col, 'mean')].round(1)
-                except:
-                    flat_cols = [f"{a}_{b}" for a, b in home_away_stats.columns if isinstance(a, str) and isinstance(b, str)]
-                    if f"{col}_mean" in flat_cols:
-                        col_idx = flat_cols.index(f"{col}_mean")
-                        stats_display[f'{col} Avg'] = home_away_stats.iloc[:, col_idx].round(1)
-           
-            if 'PTS' in available_cols:
-                try:
-                    stats_display['Games'] = home_away_stats[('PTS', 'count')]
-                except:
-                    flat_cols = [f"{a}_{b}" for a, b in home_away_stats.columns if isinstance(a, str) and isinstance(b, str)]
-                    if "PTS_count" in flat_cols:
-                        col_idx = flat_cols.index("PTS_count")
-                        stats_display['Games'] = home_away_stats.iloc[:, col_idx]
-           
-            print(stats_display)
-        else:
-            print("Required data for home/away analysis not available.")
-    except Exception as e:
-        print(f"Error in home/away analysis: {e}")
-   
-    # Win vs Loss analysis
-    print("\nPerformance in Wins vs Losses:")
-    if 'Result' in df.columns:
-        try:
-            # Extract win/loss from result column - use .loc to avoid SettingWithCopyWarning
-            df.loc[:, 'Win'] = df['Result'].apply(lambda x: str(x).startswith('W') if pd.notna(x) else None)
-           
-            # Check if we have valid win/loss data
-            valid_results = df[df['Win'].notna()].copy()
-           
-            if not valid_results.empty:
-                required_cols = ['PTS', 'AST', 'TRB']
-                available_cols = [col for col in required_cols if col in valid_results.columns]
-               
-                if available_cols:
-                    win_loss_stats = valid_results.groupby('Win')[available_cols].agg(['mean', 'std', 'count']).reset_index()
-                    win_loss_stats.loc[:, 'Outcome'] = win_loss_stats['Win'].map({True: 'Wins', False: 'Losses'})
-                   
-                    # Properly drop from MultiIndex
-                    win_loss_stats = win_loss_stats.drop(('Win', ''), axis=1)
-                   
-                    # Reorganize for better display
-                    outcome_display = pd.DataFrame({'Outcome': win_loss_stats['Outcome']})
-                   
-                    for col in available_cols:
-                        try:
-                            outcome_display[f'{col} Avg'] = win_loss_stats[(col, 'mean')].round(1)
-                        except:
-                            flat_cols = [f"{a}_{b}" for a, b in win_loss_stats.columns if isinstance(a, str) and isinstance(b, str)]
-                            if f"{col}_mean" in flat_cols:
-                                col_idx = flat_cols.index(f"{col}_mean")
-                                outcome_display[f'{col} Avg'] = win_loss_stats.iloc[:, col_idx].round(1)
-                   
-                    if 'PTS' in available_cols:
-                        try:
-                            outcome_display['Games'] = win_loss_stats[('PTS', 'count')]
-                        except:
-                            flat_cols = [f"{a}_{b}" for a, b in win_loss_stats.columns if isinstance(a, str) and isinstance(b, str)]
-                            if "PTS_count" in flat_cols:
-                                col_idx = flat_cols.index("PTS_count")
-                                outcome_display['Games'] = win_loss_stats.iloc[:, col_idx]
-                   
-                    print(outcome_display)
+            # Print recommendation
+            if weighted_prob is not None:
+                print(f"\nWeighted Probability Analysis: {weighted_prob:.1%}")
+                if weighted_prob >= 0.60:
+                    print(f"STRONG RECOMMENDATION: BET OVER {line} {stat}")
+                elif weighted_prob >= 0.55:
+                    print(f"MODERATE RECOMMENDATION: CONSIDER OVER {line} {stat}")
+                elif weighted_prob <= 0.40:
+                    print(f"STRONG RECOMMENDATION: BET UNDER {line} {stat}")
+                elif weighted_prob <= 0.45:
+                    print(f"MODERATE RECOMMENDATION: CONSIDER UNDER {line} {stat}")
                 else:
-                    print("Required statistics not available for win/loss analysis.")
+                    print(f"NO CLEAR EDGE: AVOID BETTING ON {stat}")
             else:
-                print("No valid win/loss data available.")
+                print("\nInsufficient data for comprehensive analysis")
+                      
         except Exception as e:
-            print(f"Error in win/loss analysis: {e}")
-    else:
-        print("Result information not available for win/loss analysis.")
+            print(f"Error analyzing {stat}: {e}")
+       
+    return results
 
-def get_team_abbreviation_map():
-    """Returns a dictionary mapping team names to their abbreviations."""
-    return {
-        "atlanta": "ATL", "hawks": "ATL",
-        "boston": "BOS", "celtics": "BOS",
-        "brooklyn": "BRK", "nets": "BRK",
-        "charlotte": "CHO", "hornets": "CHO",
-        "chicago": "CHI", "bulls": "CHI",
-        "cleveland": "CLE", "cavaliers": "CLE", "cavs": "CLE",
-        "dallas": "DAL", "mavericks": "DAL", "mavs": "DAL",
-        "denver": "DEN", "nuggets": "DEN",
-        "detroit": "DET", "pistons": "DET",
-        "golden state": "GSW", "warriors": "GSW",
-        "houston": "HOU", "rockets": "HOU",
-        "indiana": "IND", "pacers": "IND",
-        "la clippers": "LAC", "los angeles clippers": "LAC", "clippers": "LAC",
-        "la lakers": "LAL", "los angeles lakers": "LAL", "lakers": "LAL",
-        "memphis": "MEM", "grizzlies": "MEM",
-        "miami": "MIA", "heat": "MIA",
-        "milwaukee": "MIL", "bucks": "MIL",
-        "minnesota": "MIN", "timberwolves": "MIN", "wolves": "MIN",
-        "new orleans": "NOP", "pelicans": "NOP", "pels": "NOP",
-        "new york": "NYK", "knicks": "NYK",
-        "oklahoma city": "OKC", "thunder": "OKC",
-        "orlando": "ORL", "magic": "ORL",
-        "philadelphia": "PHI", "76ers": "PHI", "sixers": "PHI",
-        "phoenix": "PHO", "suns": "PHO",
-        "portland": "POR", "trail blazers": "POR", "blazers": "POR",
-        "sacramento": "SAC", "kings": "SAC",
-        "san antonio": "SAS", "spurs": "SAS",
-        "toronto": "TOR", "raptors": "TOR",
-        "utah": "UTA", "jazz": "UTA",
-        "washington": "WAS", "wizards": "WAS"
-    }
+def process_team_playoff_analysis(team_name, betting_data=None, summary_only=False):
+    """
+    Process playoff analysis for all players on a team with available betting lines.
+    
+    Args:
+        team_name (str): The team name to analyze
+        betting_data (dict, optional): Pre-loaded betting data. If None, will attempt to load from JSON.
+        summary_only (bool): If True, only prints the final summary, not individual player analyses
+        
+    Returns:
+        list: Analysis results for each player and betting line
+    """
+    if not summary_only:
+        print(f"\n{'='*60}")
+        print(f"TEAM PLAYOFF ANALYSIS: {team_name.upper()}")
+        print(f"{'='*60}")
+    
+    # Load betting lines if not provided
+    if betting_data is None:
+        betting_data = load_betting_lines_from_json(team_name=team_name)
+        
+    if not betting_data:
+        print(f"No betting data found for {team_name}")
+        return []
+        
+    # Get opponent team abbreviation
+    game_info = betting_data.get('game_info', {})
+    home_team = game_info.get('home_team', '')
+    away_team = game_info.get('away_team', '')
+    
+    # Determine opponent based on which team we're analyzing
+    if team_name.lower() in home_team.lower():
+        opponent = away_team
+    else:
+        opponent = home_team
+        
+    # Get opponent abbreviation (extract first 3 chars or search for common abbreviations)
+    opponent_abbr = opponent.split()[-1][:3].upper()
+    
+    # Process each player with betting lines
+    all_results = []
+    players_data = betting_data.get('players', {})
+    
+    # Sort players by team to make sure we're analyzing the right team's players
+    team_players = {name: data for name, data in players_data.items() 
+                    if data.get('team', '').lower() in team_name.lower()}
+    
+    if not team_players:
+        print(f"No players found for {team_name}")
+        return []
+        
+    if not summary_only:
+        print(f"Found {len(team_players)} players with betting lines")
+    
+    for player_name, player_data in team_players.items():
+        if not summary_only:
+            print(f"\n{'-'*60}")
+            print(f"Analyzing {player_name}")
+        
+        # Extract player first and last name
+        name_parts = player_name.split()
+        if len(name_parts) < 2:
+            if not summary_only:
+                print(f"Warning: Could not parse name {player_name}")
+            continue
+            
+        first_name = name_parts[0]
+        last_name = ' '.join(name_parts[1:])
+        
+        # Get player betting lines
+        player_props = player_data.get('props', {})
+        if not player_props:
+            if not summary_only:
+                print(f"No betting lines found for {player_name}")
+            continue
+            
+        # Extract betting lines
+        betting_lines = {}
+        for stat, prop_data in player_props.items():
+            if 'line' in prop_data:
+                betting_lines[stat] = prop_data['line']
+        
+        if not betting_lines:
+            if not summary_only:
+                print(f"No valid betting lines found for {player_name}")
+            continue
+            
+        # Get player playoff URL
+        player_url, player_id = create_player_playoff_url(first_name, last_name)
+        if not player_url:
+            if not summary_only:
+                print(f"Could not create URL for {player_name}")
+            continue
+            
+        # Get playoff games
+        playoff_games = get_playoff_games(player_url)
+        if playoff_games is None or playoff_games.empty:
+            if not summary_only:
+                print(f"No playoff data found for {player_name}")
+            continue
+            
+        # Calculate playoff stats
+        stats_df, std_df, valid_data = calculate_playoff_stats(playoff_games, opponent_abbr)
+        if stats_df is None:
+            if not summary_only:
+                print(f"Could not calculate playoff stats for {player_name}")
+            continue
+            
+        # Get games vs opponent
+        team_games = get_games_vs_team(valid_data, opponent_abbr)
+        
+        # Analyze betting lines - but silence the output if summary_only is True
+        if summary_only:
+            # Temporarily redirect stdout to suppress output
+            import io
+            import sys
+            original_stdout = sys.stdout
+            sys.stdout = io.StringIO()
+            
+            try:
+                player_results = calculate_playoff_betting_lines(
+                    player_name, opponent_abbr, stats_df, std_df, valid_data, 
+                    betting_lines=betting_lines, team_games=team_games
+                )
+            finally:
+                # Restore stdout
+                sys.stdout = original_stdout
+        else:
+            player_results = calculate_playoff_betting_lines(
+                player_name, opponent_abbr, stats_df, std_df, valid_data, 
+                betting_lines=betting_lines, team_games=team_games
+            )
+        
+        all_results.extend(player_results)
+        
+    # Summarize team analysis
+    print(f"\n{'='*60}")
+    print(f"TEAM PLAYOFF ANALYSIS SUMMARY: {team_name} vs {opponent}")
+    print(f"{'='*60}")
+    
+    # Group by stat type
+    stat_groups = {}
+    for result in all_results:
+        stat = result['stat']
+        if stat not in stat_groups:
+            stat_groups[stat] = []
+        stat_groups[stat].append(result)
+    
+    # Print summary by stat type
+    for stat, results in stat_groups.items():
+        print(f"\n{'-'*40}")
+        print(f"{stat} BETS SUMMARY")
+        print(f"{'-'*40}")
+        
+        # Sort by probability (highest first)
+        sorted_results = sorted(results, key=lambda x: x.get('weighted_prob', 0), reverse=True)
+        
+        for result in sorted_results:
+            player = result['player']
+            line = result['line']
+            prob = result.get('weighted_prob')
+            
+            if prob is None:
+                continue
+                
+            if prob >= 0.60:
+                print(f"STRONG OVER: {player} {stat} > {line} ({prob:.1%})")
+            elif prob >= 0.55:
+                print(f"CONSIDER OVER: {player} {stat} > {line} ({prob:.1%})")
+            elif prob <= 0.40:
+                print(f"STRONG UNDER: {player} {stat} < {line} ({prob:.1%})")
+            elif prob <= 0.45:
+                print(f"CONSIDER UNDER: {player} {stat} < {line} ({prob:.1%})")
+    
+    return all_results
 
 def main():
-    # Get player name from user
-    print("NBA PLAYOFF BETTING ANALYZER")
-    print("============================")
-    print("Enter player information:")
-    first_name = input("First name: ")
-    last_name = input("Last name: ")
-   
-    # Create player URL for playoff data
-    player_url, player_id = create_player_playoff_url(first_name, last_name)
-    if not player_url:
-        return
-   
-    # Get all playoff games
-    print(f"\nFetching playoff data for {first_name} {last_name}...")
-    all_playoff_games = get_playoff_games(player_url)
-   
-    if all_playoff_games is None or all_playoff_games.empty:
-        print(f"No playoff data found for {first_name} {last_name}")
-        return
-   
-    print(f"Found {len(all_playoff_games)} playoff games for {first_name} {last_name}")
-   
-    # Get team input from user
-    print("\nEnter opponent team information (e.g., 'Lakers', 'GSW', 'Boston'):")
-    team_input = input("Team: ").lower()
-   
-    # Map team input to abbreviation
-    team_map = get_team_abbreviation_map()
-    team_abbr = None
-   
-    # Check if direct input matches an abbreviation
-    team_abbr_upper = team_input.upper()
-    if team_abbr_upper in [abbr for abbr in team_map.values()]:
-        team_abbr = team_abbr_upper
-    else:
-        # Look up the abbreviation from the team name
-        for name, abbr in team_map.items():
-            if team_input in name:
-                team_abbr = abbr
-                break
-   
-    if not team_abbr:
-        print(f"Could not find team abbreviation for '{team_input}'")
-        print("Using common abbreviations like 'LAL' for Lakers, 'GSW' for Warriors, etc.")
-        team_abbr = input("Please enter the correct team abbreviation: ").upper()
-   
-    # Calculate playoff statistics
-    print(f"\nAnalyzing playoff stats for {first_name} {last_name} against {team_abbr}...")
-    stats_df, std_df, series_df = calculate_playoff_stats(all_playoff_games, team_abbr)
-   
-    # Get games against the specific team
-    team_games = get_games_vs_team(series_df, team_abbr)
-   
-    if team_games is not None and not team_games.empty:
-        print(f"\nFound {len(team_games)} playoff games against {team_abbr}")
-    else:
-        print(f"\nNo playoff games found against {team_abbr}")
-   
-    # Display the statistics
-    print("\nPlayoff Statistics Summary:")
-    print(stats_df)
-    print("\nStandard Deviations:")
-    print(std_df)
-   
-    # Analyze series context
-    analyze_series_context(series_df, team_abbr)
-   
-    # Betting line analysis for playoffs
-    analyze_playoff_betting_lines(f"{first_name} {last_name}", team_abbr, stats_df, std_df, series_df, team_games)
+    """Main function to run the playoff betting analyzer."""
+    print("NBA Playoff Prop Betting Analyzer")
+    print("="*40)
+    
+    # Ask if user wants to analyze a team or individual player
+    analysis_type = input("Analyze a team or player? (team/player): ").strip().lower()
+    
+    if analysis_type == 'team':
+        team_name = input("Enter team name (e.g. Denver Nuggets): ").strip()
+        summary_only = input("Show only summary? (y/n): ").strip().lower() in ['y', 'yes']
+        results = process_team_playoff_analysis(team_name, summary_only=summary_only)
+        
+    else:  # Individual player analysis
+        # Load available betting lines
+        team_name = input("Enter team name to load betting lines (optional): ").strip()
+        betting_data = load_betting_lines_from_json(team_name=team_name)
+        
+        if betting_data:
+            # Get game information
+            game_info = betting_data.get('game_info', {})
+            home_team = game_info.get('home_team', '')
+            away_team = game_info.get('away_team', '')
+            game_date = game_info.get('date', '')
+            
+            print(f"Loaded betting lines for {away_team} @ {home_team} on {game_date}")
+            
+            # List available players
+            players_data = betting_data.get('players', {})
+            if players_data:
+                print("\nAvailable players:")
+                for i, (player_name, data) in enumerate(players_data.items(), 1):
+                    team = data.get('team', 'Unknown')
+                    props = data.get('props', {})
+                    print(f"{i}. {player_name} ({team}) - {len(props)} props available")
+                
+                player_idx = input("\nSelect player number or enter name: ").strip()
+                
+                # Handle selection by number or name
+                selected_player = None
+                if player_idx.isdigit() and 1 <= int(player_idx) <= len(players_data):
+                    selected_player = list(players_data.keys())[int(player_idx) - 1]
+                elif player_idx in players_data:
+                    selected_player = player_idx
+                else:
+                    # Try matching partial name
+                    matches = [name for name in players_data.keys() if player_idx.lower() in name.lower()]
+                    if len(matches) == 1:
+                        selected_player = matches[0]
+                    elif len(matches) > 1:
+                        print("Multiple matches found:")
+                        for i, name in enumerate(matches, 1):
+                            print(f"{i}. {name}")
+                        sub_idx = input("Select player number: ").strip()
+                        if sub_idx.isdigit() and 1 <= int(sub_idx) <= len(matches):
+                            selected_player = matches[int(sub_idx) - 1]
+                
+                if selected_player:
+                    player_data = players_data[selected_player]
+                    team = player_data.get('team', '')
+                    
+                    # Get opponent
+                    if team.lower() in home_team.lower():
+                        opponent = away_team
+                    else:
+                        opponent = home_team
+                    
+                    # Get player first and last name
+                    name_parts = selected_player.split()
+                    first_name = name_parts[0]
+                    last_name = ' '.join(name_parts[1:])
+                    
+                    # Get opponent abbreviation
+                    opponent_abbr = opponent.split()[-1][:3].upper()
+                    
+                    # Extract betting lines
+                    betting_lines = {}
+                    for stat, prop_data in player_data.get('props', {}).items():
+                        if 'line' in prop_data:
+                            betting_lines[stat] = prop_data['line']
+                    
+                    # Get player playoff data and analyze
+                    player_url, player_id = create_player_playoff_url(first_name, last_name)
+                    if player_url:
+                        playoff_games = get_playoff_games(player_url)
+                        if playoff_games is not None and not playoff_games.empty:
+                            stats_df, std_df, valid_data = calculate_playoff_stats(playoff_games, opponent_abbr)
+                            team_games = get_games_vs_team(valid_data, opponent_abbr)
+                            
+                            calculate_playoff_betting_lines(
+                                selected_player, opponent_abbr, stats_df, std_df, 
+                                valid_data, betting_lines=betting_lines, team_games=team_games
+                            )
+                        else:
+                            print(f"No playoff data found for {selected_player}")
+                    else:
+                        print(f"Could not create URL for {selected_player}")
+                else:
+                    print("Player not found")
+        
+        else:
+            # Manual player input
+            player_name = input("Enter player name (First Last): ").strip()
+            opponent = input("Enter opponent team name: ").strip()
+            
+            # Parse player name
+            name_parts = player_name.split()
+            if len(name_parts) < 2:
+                print("Invalid player name format. Use 'First Last'")
+                return
+                
+            first_name = name_parts[0]
+            last_name = ' '.join(name_parts[1:])
+            
+            # Get opponent abbreviation
+            opponent_abbr = opponent.split()[-1][:3].upper()
+            
+            # Get player playoff URL
+            player_url, player_id = create_player_playoff_url(first_name, last_name)
+            if not player_url:
+                print(f"Could not create URL for {player_name}")
+                return
+                
+            # Get playoff games
+            playoff_games = get_playoff_games(player_url)
+            if playoff_games is None or playoff_games.empty:
+                print(f"No playoff data found for {player_name}")
+                return
+                
+            # Calculate playoff stats
+            stats_df, std_df, valid_data = calculate_playoff_stats(playoff_games, opponent_abbr)
+            if stats_df is None:
+                print(f"Could not calculate playoff stats for {player_name}")
+                return
+                
+            # Get games vs opponent
+            team_games = get_games_vs_team(valid_data, opponent_abbr)
+            
+            # Analyze betting lines
+            calculate_playoff_betting_lines(
+                player_name, opponent_abbr, stats_df, std_df, valid_data, team_games=team_games
+            )
 
 if __name__ == "__main__":
     main()
