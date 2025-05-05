@@ -1,6 +1,7 @@
 import requests
 import json
 import os
+import argparse
 from datetime import datetime
 
 API_KEY = "afe51d931dc36e2127002cc7dd7ff528"
@@ -14,56 +15,32 @@ API_BASE = "https://api.the-odds-api.com/v4"
 OUTPUT_DIR = r"C:\Users\Student\Desktop\NBA_Algorithm\code\games"
 
 def american_odds_to_probability(odds):
-    """Convert American odds to implied probability percentage"""
     if odds is None:
         return None
-   
-    if odds > 0:
-        # Positive odds: Underdog
-        return round(100 / (odds + 100) * 100, 1)
-    else:
-        # Negative odds: Favorite
-        return round(abs(odds) / (abs(odds) + 100) * 100, 1)
+    return round(100 / (odds + 100) * 100, 1) if odds > 0 else round(abs(odds) / (abs(odds) + 100) * 100, 1)
 
 def get_team_game(team_name):
     url = f"{API_BASE}/sports/{SPORT}/events?apiKey={API_KEY}&regions={REGION}"
     response = requests.get(url)
-   
-    # Extract and display the remaining requests info from headers
     if 'x-requests-remaining' in response.headers:
-        remaining = response.headers['x-requests-remaining']
-        print(f"API Requests Remaining: {remaining}")
+        print(f"API Requests Remaining: {response.headers['x-requests-remaining']}")
     if 'x-requests-used' in response.headers:
-        used = response.headers['x-requests-used']
-        print(f"API Requests Used: {used}")
-   
-    # Debug the response
+        print(f"API Requests Used: {response.headers['x-requests-used']}")
     print(f"Response status code: {response.status_code}")
-   
+    
     try:
         events = response.json()
-        # Debug the response structure
         if not isinstance(events, list):
-            print(f"Warning: API returned {type(events)} instead of list")
-            print(f"Response content: {events[:200]}..." if isinstance(events, str) else events)
+            print(f"Warning: Unexpected response format: {type(events)}")
             return None
-           
         print(f"Found {len(events)} events")
-       
         for event in events:
-            # Ensure event is a dictionary before accessing keys
-            if not isinstance(event, dict):
-                print(f"Warning: Event is not a dictionary: {event}")
-                continue
-               
             home_team = event.get('home_team', '')
             away_team = event.get('away_team', '')
-           
             if (home_team and team_name.lower() in home_team.lower()) or \
                (away_team and team_name.lower() in away_team.lower()):
-                return event  # Return the first future game found
+                return event
         return None
-       
     except json.JSONDecodeError as e:
         print(f"Error decoding JSON: {e}")
         print(f"Response content: {response.text[:200]}...")
@@ -77,55 +54,37 @@ def get_player_props(event_id, team_name=None):
         "markets": MARKETS,
         "oddsFormat": ODDS_FORMAT
     }
-   
     response = requests.get(url, params=params)
-   
-    # Extract and display the remaining requests info from headers
     if 'x-requests-remaining' in response.headers:
-        remaining = response.headers['x-requests-remaining']
-        print(f"API Requests Remaining: {remaining}")
+        print(f"API Requests Remaining: {response.headers['x-requests-remaining']}")
     if 'x-requests-used' in response.headers:
-        used = response.headers['x-requests-used']
-        print(f"API Requests Used: {used}")
-   
+        print(f"API Requests Used: {response.headers['x-requests-used']}")
+    
     try:
         data = response.json()
     except json.JSONDecodeError as e:
         print(f"Error decoding JSON: {e}")
         print(f"Response content: {response.text[:200]}...")
         return {}
-   
+
     props = {}
-   
-    # Look inside bookmakers
     for bookmaker in data.get("bookmakers", []):
         for market in bookmaker.get("markets", []):
             market_key = market["key"]
-           
             if not market_key.startswith("player_"):
                 continue
-               
             for outcome in market.get("outcomes", []):
                 player = outcome.get("description", "")
-               
-                # Try to extract player name and team
                 player_parts = player.split(" - ")
                 player_name = player_parts[0] if len(player_parts) > 0 else player
                 player_team = player_parts[1] if len(player_parts) > 1 else ""
-               
-                # If team_name is provided, filter by team
                 if team_name and not (team_name.lower() in player.lower() or 
                                     (player_team and team_name.lower() in player_team.lower())):
                     continue
-               
                 if player not in props:
                     props[player] = {}
-               
-                # Initialize this market for this player if not exists
                 if market_key not in props[player]:
                     props[player][market_key] = {"line": None, "over": None, "under": None}
-               
-                # Update with the data from this outcome
                 if outcome.get("name") == "Over":
                     props[player][market_key]["over"] = outcome.get("price")
                     props[player][market_key]["line"] = outcome.get("point")
@@ -135,65 +94,35 @@ def get_player_props(event_id, team_name=None):
     return props
 
 def format_props_to_json(props):
-    """Convert props data to structured JSON format"""
     if not props:
         print("No player props found.")
         return None
-    
     print(f"\nFound props for {len(props)} players:")
-    
-    json_data = {
-        "players": []
-    }
-    
+    json_data = {"players": []}
     for player, markets in sorted(props.items()):
         player_data = {
-            "name": player,
+            "name": player.split(" - ")[0],
+            "team": player.split(" - ")[1] if " - " in player else "",
             "markets": []
         }
-        
-        # Try to extract player name and team
-        player_parts = player.split(" - ")
-        if len(player_parts) > 1:
-            player_data["name"] = player_parts[0]
-            player_data["team"] = player_parts[1]
-        
         for stat, info in markets.items():
             line = info['line']
             over = info['over']
             under = info['under']
-            
-            # Convert odds to probabilities
             over_prob = american_odds_to_probability(over)
             under_prob = american_odds_to_probability(under)
-            
-            stat_name = stat.replace('player_', '')
-            
             market_data = {
-                "stat": stat_name,
+                "stat": stat.replace('player_', ''),
                 "line": line,
-                "over": {
-                    "odds": over,
-                    "implied_probability": over_prob
-                },
-                "under": {
-                    "odds": under,
-                    "implied_probability": under_prob
-                }
+                "over": {"odds": over, "implied_probability": over_prob},
+                "under": {"odds": under, "implied_probability": under_prob}
             }
-            
             player_data["markets"].append(market_data)
-            
-            # Print summary for console output
-            print(f"* {player} - {stat_name.upper()}: {line} (Over: {over}, Under: {under})")
-        
+            print(f"* {player} - {stat.upper()}: {line} (Over: {over}, Under: {under})")
         json_data["players"].append(player_data)
-    
     return json_data
 
 def save_props_to_json(game, props_data):
-    """Save the props data as a JSON file"""
-    # Ensure the output directory exists
     if not os.path.exists(OUTPUT_DIR):
         try:
             os.makedirs(OUTPUT_DIR)
@@ -201,19 +130,11 @@ def save_props_to_json(game, props_data):
         except Exception as e:
             print(f"Error creating directory {OUTPUT_DIR}: {e}")
             return None
-    
-    # Create a filename with team names and date
     game_date = datetime.fromisoformat(game['commence_time'].replace('Z', '+00:00'))
     date_str = game_date.strftime('%Y-%m-%d')
     base_filename = f"{game['away_team']}_at_{game['home_team']}_{date_str}_props.json"
-    
-    # Replace any invalid characters in filename
     base_filename = base_filename.replace(' ', '_').replace('/', '_')
-    
-    # Create full path
     full_path = os.path.join(OUTPUT_DIR, base_filename)
-    
-    # Add metadata to the JSON
     output_json = {
         "metadata": {
             "game": {
@@ -226,12 +147,9 @@ def save_props_to_json(game, props_data):
         },
         "props": props_data
     }
-    
-    # Write the JSON file
     try:
         with open(full_path, 'w', encoding='utf-8') as f:
             json.dump(output_json, f, indent=2, ensure_ascii=False)
-        
         print(f"\nSaved all props to JSON: {full_path}")
         return full_path
     except Exception as e:
@@ -239,57 +157,49 @@ def save_props_to_json(game, props_data):
         return None
 
 def git_add_commit_push(file_path, commit_message=None):
-    """Add the file to git, commit it and push"""
     try:
         import subprocess
-        
-        # Default commit message if none provided
         if not commit_message:
             commit_message = f"Added player props JSON file: {os.path.basename(file_path)}"
-        
-        # Check if we're in a git repository
         result = subprocess.run(['git', 'rev-parse', '--is-inside-work-tree'], 
                               capture_output=True, text=True)
-        
         if result.returncode != 0:
             print("Not inside a git repository. Skipping git operations.")
             return False
-        
-        # Add the file
         subprocess.run(['git', 'add', file_path], check=True)
         print(f"Added {file_path} to git")
-        
-        # Commit the file
         subprocess.run(['git', 'commit', '-m', commit_message], check=True)
         print(f"Committed changes with message: {commit_message}")
-        
-        # Push the changes
         subprocess.run(['git', 'push'], check=True)
         print("Successfully pushed changes to remote repository")
-        
         return True
     except Exception as e:
         print(f"Error during git operations: {e}")
         return False
 
-if __name__ == "__main__":
-    team = input("Enter the NBA team you're interested in: ")
-    game = get_team_game(team)
+def main():
+    parser = argparse.ArgumentParser(description="Fetch NBA player prop bets for a given team.")
+    parser.add_argument('--team', type=str, required=True, help="NBA team name (e.g., 'Lakers')")
+    args = parser.parse_args()
+
+    team_name = args.team
+    game = get_team_game(team_name)
     if not game:
         print("No upcoming game found for that team.")
+        return
+
+    print(f"Found game: {game['home_team']} vs {game['away_team']} on {game['commence_time']}")
+    print("\nFetching props for ALL players in this game...")
+    props = get_player_props(game['id'])
+
+    if props:
+        json_data = format_props_to_json(props)
+        if json_data:
+            file_path = save_props_to_json(game, json_data)
+            if file_path:
+                git_add_commit_push(file_path)
     else:
-        print(f"Found game: {game['home_team']} vs {game['away_team']} on {game['commence_time']}")
-        
-        # Get props for BOTH teams in the game, not just the team entered
-        print("\nFetching props for ALL players in this game...")
-        props = get_player_props(game['id'])  # Not filtering by team to get all players
-        
-        if props:
-            json_data = format_props_to_json(props)
-            if json_data:
-                file_path = save_props_to_json(game, json_data)
-                if file_path:
-                    # Attempt to commit and push the file to git
-                    git_add_commit_push(file_path)
-        else:
-            print("No player props available yet for this game.")
+        print("No player props available yet for this game.")
+
+if __name__ == "__main__":
+    main()
